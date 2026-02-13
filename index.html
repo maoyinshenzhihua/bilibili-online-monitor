@@ -214,8 +214,8 @@
         // 获取在线人数数据
         async function fetchOnlineCount() {
             try {
-                // 使用相对路径，自动适应部署环境
-                const apiUrl = `/api/online/${currentBvid}`;
+                // 使用Vercel部署的后端地址
+                const apiUrl = `https://bilibili-online-monitor.vercel.app/api/online/${currentBvid}`;
                 console.log(`Fetching data from: ${apiUrl}`);
                 const response = await fetch(apiUrl);
                 const data = await response.json();
