@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>B站视频在线人数监测</title>
+    <!-- 使用更可靠的CDN链接 -->
+    <script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
+    <script>
+        // 容错处理：如果Chart未定义，提供基本的替代方案
+        if (typeof Chart === 'undefined') {
+            console.warn('Chart.js加载失败，将使用基本功能');
+            window.Chart = function() {
+                return {
+                    data: { labels: [], datasets: [{ data: [] }] },
+                    update: function() {},
+                    resetZoom: function() {}
+                };
+            };
+        }
+    </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            margin: 20px 0;
+            gap: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        #startBtn {
+            background-color: #4CAF50;
+            color: white;
+        }
+        #pauseBtn {
+            background-color: #f44336;
+            color: white;
+        }
+        #saveBtn {
+            background-color: #2196F3;
+            color: white;
+        }
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin: 20px 0;
+        }
+        #status {
+            text-align: center;
+            margin: 10px 0;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        #videoInfo {
+            text-align: center;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>B站视频在线人数监测</h1>
+        <div id="videoInfo">
+            <div style="margin: 10px 0;">
+                <label for="bvidInput">输入BV号: </label>
+                <input type="text" id="bvidInput" placeholder="例如: BV1pgFSzfEvj" value="BV1pgFSzfEvj">
+                <button id="setBvidBtn">设置视频</button>
+            </div>
+            <div style="margin: 10px 0;">
+                <label for="intervalSelect">请求频率: </label>
+                <select id="intervalSelect">
+                    <option value="5">5秒</option>
+                    <option value="10">10秒</option>
+                    <option value="15">15秒</option>
+                    <option value="20">20秒</option>
+                    <option value="30" selected>30秒</option>
+                </select>
+            </div>
+            <div id="videoLink">视频链接: <a href="https://www.bilibili.com/video/BV1pgFSzfEvj/" target="_blank">https://www.bilibili.com/video/BV1pgFSzfEvj/</a></div>
+        </div>
+        <div id="status">状态: 未开始</div>
+        <div class="controls">
+            <button id="startBtn">开始监测</button>
+            <button id="pauseBtn" disabled>暂停监测</button>
+            <button id="saveBtn" disabled>保存曲线图</button>
+        </div>
+        <div class="chart-container">
+            <canvas id="onlineChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        // 全局变量
+        let monitoringInterval = null;
+        let chart;
+        let dataPoints = [];
+        let timestamps = [];
+        let currentBvid = 'BV1pgFSzfEvj';
+        let currentInterval = 30;
+        
+        // 解析在线人数模糊值
+        function parseOnlineCount(countStr) {
+            // 移除加号
+            const cleanStr = countStr.replace(/\+/g, '');
+            
+            // 处理包含"万"的情况，如"1.4万"
+            if (cleanStr.includes('万')) {
+                const numPart = cleanStr.replace('万', '');
+                const num = parseFloat(numPart);
+                if (!isNaN(num)) {
+                    return Math.round(num * 10000);
+                }
+            }
+            
+            // 处理纯数字字符串，如"1000"
+            const num = parseInt(cleanStr);
+            if (!isNaN(num)) {
+                return num;
+            }
+            
+            // 如果无法解析，返回0
+            return 0;
+        }
+        
+        // 初始化图表
+        function initChart() {
+            const ctx = document.getElementById('onlineChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: '在线人数',
+                        data: [],
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderWidth: 2,
+                        tension: 0.1,
+                        pointRadius: 3,
+                        pointBackgroundColor: 'rgba(75, 192, 192, 1)'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: '时间'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: '在线人数'
+                            },
+                            beginAtZero: true
+                        }
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'B站视频在线人数趋势'
+                        },
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        },
+                        zoom: {
+                            pan: {
+                                enabled: true,
+                                mode: 'x'
+                            },
+                            zoom: {
+                                wheel: {
+                                    enabled: true
+                                },
+                                pinch: {
+                                    enabled: true
+                                },
+                                mode: 'x'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // 获取在线人数数据
+        async function fetchOnlineCount() {
+            try {
+                // 使用相对路径，自动适应部署环境
+                const apiUrl = `/api/online/${currentBvid}`;
+                console.log(`Fetching data from: ${apiUrl}`);
+                const response = await fetch(apiUrl);
+                const data = await response.json();
+                
+                if (data.success) {
+                    // 容错处理：确保所有必要字段都存在
+                    let onlineCount = data.data.onlineCount || 0;
+                    let originalOnlineCount = data.data.originalOnlineCount || onlineCount;
+                    const timestamp = data.data.timestamp ? new Date(data.data.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+                    
+                    // 确保onlineCount是数字类型
+                    if (typeof onlineCount === 'string') {
+                        // 处理模糊值，如"1.4万+"、"1000+"等
+                        onlineCount = parseOnlineCount(onlineCount);
+                    } else {
+                        onlineCount = parseInt(onlineCount) || 0;
+                    }
+                    
+                    // 更新数据点
+                    dataPoints.push(onlineCount);
+                    timestamps.push(timestamp);
+                    
+                    // 不限制数据点数量，保存所有监测数据
+                    // if (dataPoints.length > 20) {
+                    //     dataPoints.shift();
+                    //     timestamps.shift();
+                    // }
+                    
+                    // 容错处理：确保数据数组长度一致
+                    if (dataPoints.length !== timestamps.length) {
+                        const minLength = Math.min(dataPoints.length, timestamps.length);
+                        dataPoints = dataPoints.slice(0, minLength);
+                        timestamps = timestamps.slice(0, minLength);
+                    }
+                    
+                    // 更新图表
+                    try {
+                        chart.data.labels = timestamps;
+                        chart.data.datasets[0].data = dataPoints;
+                        // 重置缩放状态，确保新数据添加时图表能自动适应
+                        if (chart.resetZoom) {
+                            chart.resetZoom();
+                        }
+                        chart.update();
+                    } catch (chartError) {
+                        console.error('图表更新错误:', chartError);
+                    }
+                    
+                    // 更新状态，显示原始值
+                    document.getElementById('status').textContent = `状态: 监测中 - 当前在线人数: ${originalOnlineCount}`;
+                } else {
+                    console.error('获取数据失败:', data.error);
+                    document.getElementById('status').textContent = `状态: 监测中 - 获取数据失败`;
+                }
+            } catch (error) {
+                console.error('请求错误:', error);
+                document.getElementById('status').textContent = `状态: 监测中 - 请求错误`;
+            }
+        }
+        
+        // 开始监测
+        function startMonitoring() {
+            if (!monitoringInterval) {
+                // 读取请求频率
+                const intervalSelect = document.getElementById('intervalSelect');
+                currentInterval = parseInt(intervalSelect.value) || 5;
+                
+                // 立即获取一次数据
+                fetchOnlineCount();
+                // 设置定时器，根据选择的频率获取数据
+                monitoringInterval = setInterval(fetchOnlineCount, currentInterval * 1000);
+                
+                // 更新按钮状态
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('pauseBtn').disabled = false;
+                document.getElementById('saveBtn').disabled = true;
+                
+                // 更新状态
+                document.getElementById('status').textContent = `状态: 监测中 (${currentInterval}秒/次)`;
+            }
+        }
+        
+        // 暂停监测
+        function pauseMonitoring() {
+            if (monitoringInterval) {
+                clearInterval(monitoringInterval);
+                monitoringInterval = null;
+                
+                // 更新按钮状态
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('pauseBtn').disabled = true;
+                document.getElementById('saveBtn').disabled = false;
+                
+                // 更新状态
+                document.getElementById('status').textContent = '状态: 已暂停';
+            }
+        }
+        
+        // 保存数据表格
+        function saveChart() {
+            if (dataPoints.length > 0) {
+                // 计算统计数据
+                const numericDataPoints = dataPoints.map(point => typeof point === 'number' ? point : parseInt(point) || 0);
+                const maxOnline = Math.max(...numericDataPoints);
+                const minOnline = Math.min(...numericDataPoints);
+                const averageOnline = numericDataPoints.reduce((sum, point) => sum + point, 0) / numericDataPoints.length;
+                
+                // 找出人数高峰范围（连续3个或以上数据点高于平均值）
+                let peakRanges = [];
+                let currentPeakStart = null;
+                
+                for (let i = 0; i < numericDataPoints.length; i++) {
+                    if (numericDataPoints[i] > averageOnline) {
+                        if (currentPeakStart === null) {
+                            currentPeakStart = i;
+                        }
+                    } else {
+                        if (currentPeakStart !== null && (i - currentPeakStart) >= 1) {
+                            peakRanges.push({ start: currentPeakStart, end: i - 1 });
+                            currentPeakStart = null;
+                        }
+                    }
+                }
+                
+                // 处理最后一个高峰
+                if (currentPeakStart !== null && (numericDataPoints.length - currentPeakStart) >= 1) {
+                    peakRanges.push({ start: currentPeakStart, end: numericDataPoints.length - 1 });
+                }
+                
+                // 生成CSV数据
+                let csvContent = "# B站视频在线人数监测统计\n";
+                csvContent += `# 视频BV号: ${currentBvid}\n`;
+                csvContent += `# 监测时间: ${new Date().toISOString()}\n`;
+                csvContent += `# 数据点数量: ${dataPoints.length}\n`;
+                csvContent += `# 最高在线人数: ${maxOnline}\n`;
+                csvContent += `# 最低在线人数: ${minOnline}\n`;
+                csvContent += `# 平均在线人数: ${averageOnline.toFixed(2)}\n`;
+                
+                if (peakRanges.length > 0) {
+                    csvContent += `# 人数高峰范围: ${peakRanges.length}个\n`;
+                    peakRanges.forEach((range, index) => {
+                        const peakStartTime = timestamps[range.start];
+                        const peakEndTime = timestamps[range.end];
+                        const peakMax = Math.max(...numericDataPoints.slice(range.start, range.end + 1));
+                        csvContent += `# 高峰 ${index + 1}: ${peakStartTime} - ${peakEndTime}, 最高: ${peakMax}\n`;
+                    });
+                } else {
+                    csvContent += `# 人数高峰范围: 无\n`;
+                }
+                
+                csvContent += "\n";
+                csvContent += "时间,在线人数\n";
+                
+                for (let i = 0; i < dataPoints.length; i++) {
+                    csvContent += `${timestamps[i]},${dataPoints[i]}\n`;
+                }
+                
+                // 创建下载链接
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                
+                if (link.download !== undefined) {
+                    const url = URL.createObjectURL(blob);
+                    link.setAttribute('href', url);
+                    link.setAttribute('download', `bilibili-online-${currentBvid}-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.csv`);
+                    link.style.visibility = 'hidden';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                }
+            } else {
+                alert('没有监测数据可保存');
+            }
+        }
+        
+        // 设置BV号
+        function setBvid() {
+            const bvidInput = document.getElementById('bvidInput');
+            const newBvid = bvidInput.value.trim();
+            
+            if (newBvid) {
+                // 验证BV号格式
+                if (/^BV[0-9A-Za-z]{10}$/.test(newBvid)) {
+                    currentBvid = newBvid;
+                    
+                    // 更新视频链接
+                    const videoLinkElement = document.getElementById('videoLink');
+                    videoLinkElement.innerHTML = `视频链接: <a href="https://www.bilibili.com/video/${newBvid}/" target="_blank">https://www.bilibili.com/video/${newBvid}/</a>`;
+                    
+                    // 重置图表
+                    resetChart();
+                    
+                    // 更新状态
+                    document.getElementById('status').textContent = '状态: 未开始';
+                    
+                    // 禁用保存按钮
+                    document.getElementById('saveBtn').disabled = true;
+                } else {
+                    alert('请输入有效的BV号格式，例如: BV1pgFSzfEvj');
+                }
+            } else {
+                alert('请输入BV号');
+            }
+        }
+        
+        // 重置图表
+        function resetChart() {
+            // 清空数据
+            dataPoints = [];
+            timestamps = [];
+            
+            // 更新图表
+            chart.data.labels = [];
+            chart.data.datasets[0].data = [];
+            chart.update();
+        }
+        
+        // 事件监听器
+        document.getElementById('startBtn').addEventListener('click', startMonitoring);
+        document.getElementById('pauseBtn').addEventListener('click', pauseMonitoring);
+        document.getElementById('saveBtn').addEventListener('click', saveChart);
+        document.getElementById('setBvidBtn').addEventListener('click', setBvid);
+        
+        // 初始化
+        window.onload = function() {
+            initChart();
+        };
+    </script>
+</body>
+</html>
